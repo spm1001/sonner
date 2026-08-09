@@ -107,6 +107,8 @@ sonner --no-spawn REPO "…"       # fail rather than start a session
 
 A live session in that repo gets the message. If none is running, sonner starts one under tmux, waits for its inbox socket, then delivers — so the woken Claude sees a peer message rather than a user prompt, and treats it as a colleague's note rather than an instruction from its user.
 
+Know whose plumbing is whose: the messaging itself (sockets, registry, the two tools) is Anthropic's and needs no tmux anywhere. tmux is this estate's answer to a different problem — a spawned TUI session needs a terminal that outlasts its spawner — and all such sessions land as sibling sessions on the user's single tmux server, attachable by human and Claude alike.
+
 Spawned sessions persist and keep costing context while they live. Attach with `tmux attach -t sonner-<repo>` and exit cleanly when the errand is done.
 
 `sonner` is on PATH (`uv tool install ~/repos/spm1001/sonner`). Source and its own board: `~/repos/spm1001/sonner`. Full measurements: `~/repos/spm1001/aboyeur/docs/native-xsm-review-2026-08-08.md`.
