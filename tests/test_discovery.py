@@ -90,6 +90,19 @@ def test_sessions_in_matches_repo_and_subdirs(estate):
     assert cli.sessions_in(cli.Path("/repo/gamma")) == []
 
 
+def test_pick_prefers_exact_cwd_over_deeper():
+    """Ringing /home/u reaches the session AT /home/u, not a newer one deeper in."""
+    deeper = cli.Session(
+        pid=2, cwd=cli.Path("/home/u/repos/x"), socket=cli.Path("/s/2.sock"), name="x-2", started=2000
+    )
+    exact = cli.Session(
+        pid=3, cwd=cli.Path("/home/u"), socket=cli.Path("/s/3.sock"), name="home-3", started=1000
+    )
+    assert cli.pick([deeper, exact], cli.Path("/home/u")) == [exact]
+    assert cli.pick([deeper], cli.Path("/home/u")) == [deeper], "no exact match: newest wins as before"
+    assert cli.pick([], cli.Path("/home/u")) == []
+
+
 def test_discovery_survives_a_rewritten_environment(tmp_path, monkeypatch):
     """The receptionnaire shape: HOME points somewhere barren, XDG_RUNTIME_DIR unset.
 

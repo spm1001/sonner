@@ -163,6 +163,15 @@ def sessions_in(repo: Path) -> list[Session]:
     return [s for s in live_sessions() if s.cwd and (s.cwd == repo or repo in s.cwd.parents)]
 
 
+def pick(targets: list[Session], repo: Path) -> list[Session]:
+    """The one session a ring should land on: newest, but an exact-cwd match
+    beats one buried deeper — ringing /home/modha must reach the session
+    sitting there, not whichever repo session under it is newest (2026-08-09).
+    """
+    exact = [s for s in targets if s.cwd == repo]
+    return (exact or targets)[:1]
+
+
 def deliver(sock_path: Path, body: str, sender: str) -> None:
     """Write one message envelope to a session's inbox socket.
 
@@ -203,7 +212,9 @@ def spawn(repo: Path, timeout: float = 180.0) -> Session:
             "cold-spawn needs tmux (the spawned session must live in a terminal that "
             "outlasts this command). Install tmux, or pass --no-spawn to fail instead."
         )
-    tmux_name = f"sonner-{repo.name}"
+    # Not "sonner-<repo>": a receiver hunting for sonner's own session once picked
+    # a spawned bystander off exactly that name and misdelivered a reply (2026-08-09).
+    tmux_name = f"rung-{repo.name}"
     if subprocess.run(["tmux", "has-session", "-t", tmux_name], capture_output=True).returncode == 0:
         tmux_name = f"{tmux_name}-{os.getpid()}"  # earlier ring left its window open
     before = {s.socket for s in live_sessions()}
@@ -273,7 +284,7 @@ def main() -> int:
         targets = [spawn(repo)]
         spawned = True
     elif not args.all:
-        targets = targets[:1]
+        targets = pick(targets, repo)
 
     for s in targets:
         deliver(s.socket, body, args.sender)
