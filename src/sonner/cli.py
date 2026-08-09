@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pwd
 import shutil
 import socket
 import subprocess
@@ -39,6 +40,9 @@ import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
+
+# XDG runtime root on systemd Linux — real even when $XDG_RUNTIME_DIR is unset.
+_RUN_USER = Path("/run/user")
 
 
 class Session(NamedTuple):
@@ -54,14 +58,19 @@ def socket_dirs() -> list[Path]:
 
     Every session on the machine binds here regardless of which config dir it
     runs under, so this is the roster; registry records are only an enrichment.
+
+    Env vars are hints layered on uid-derived paths, never the only route: a
+    caller with a rewritten environment (the receptionnaire mail harness runs
+    with XDG_RUNTIME_DIR unset) must still see the whole machine.
     """
     dirs = []
     runtime = os.environ.get("XDG_RUNTIME_DIR")
     if runtime:
         dirs.append(Path(runtime) / "cc-socks")
+    dirs.append(_RUN_USER / str(os.getuid()) / "cc-socks")  # the XDG default, env or no env
     dirs.append(Path("/tmp") / "cc-socks")  # macOS (verified live: /tmp/cc-socks/<pid>.sock)
     dirs.append(Path("/tmp") / f"cc-socks-{os.getuid()}")  # the binary's long-path fallback
-    return [d for d in dirs if d.is_dir()]
+    return [d for d in dict.fromkeys(dirs) if d.is_dir()]
 
 
 def session_records() -> dict[int, dict]:
@@ -73,9 +82,20 @@ def session_records() -> dict[int, dict]:
     another (which is exactly how the first ~/notes/work ring was lost: sonner
     inherited the caller's CLAUDE_CONFIG_DIR and watched the wrong letterbox for
     90 seconds while the spawned session registered in the default one).
+
+    Homes are swept by both routes: $HOME (the caller's world-view) and the
+    passwd database (the machine's). They differ exactly when a harness overrode
+    HOME — the receptionnaire case — and each may hold registries the other hides.
     """
-    home = Path.home()
-    config_dirs = {home / ".claude", *home.glob(".claude-*")}
+    homes = {Path.home()}
+    try:
+        homes.add(Path(pwd.getpwuid(os.getuid()).pw_dir))
+    except KeyError:
+        pass  # uid not in the passwd database (containers do this)
+    config_dirs: set[Path] = set()
+    for home in homes:
+        config_dirs.add(home / ".claude")
+        config_dirs.update(home.glob(".claude-*"))
     env = os.environ.get("CLAUDE_CONFIG_DIR")
     if env:
         config_dirs.add(Path(env))

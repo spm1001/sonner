@@ -9,6 +9,7 @@ in a layout no registry dir predicted.
 import json
 import os
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
@@ -28,6 +29,10 @@ def estate(tmp_path, monkeypatch):
     sock_dir = tmp_path / "runtime" / "cc-socks"
     sock_dir.mkdir(parents=True)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "runtime"))
+    # Discovery also sweeps uid-derived roots that ignore the env; point them
+    # back into the fake estate so the real machine can't leak in.
+    monkeypatch.setattr(cli, "_RUN_USER", tmp_path / "run-user-absent")
+    monkeypatch.setattr(cli.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(tmp_path)))
 
     def record(config: str, pid: int, cwd: str, name: str) -> None:
         d = tmp_path / config / "sessions"
@@ -83,3 +88,47 @@ def test_sessions_in_matches_repo_and_subdirs(estate):
     assert [s.name for s in cli.sessions_in(cli.Path("/repo/alpha"))] == ["alpha-11"]
     assert cli.sessions_in(cli.Path("/repo")) != [], "parent dir should match sessions below it"
     assert cli.sessions_in(cli.Path("/repo/gamma")) == []
+
+
+def test_discovery_survives_a_rewritten_environment(tmp_path, monkeypatch):
+    """The receptionnaire shape: HOME points somewhere barren, XDG_RUNTIME_DIR unset.
+
+    Everything real is keyed on the uid — sockets under /run/user/<uid>/cc-socks,
+    records under the passwd-database home — and three live sessions vanished
+    behind the env-only sweep while a duplicate spawned beside them (2026-08-09).
+    Discovery must not need the caller's env to see the machine.
+    """
+    barren = tmp_path / "srv-home"
+    barren.mkdir()
+    monkeypatch.setenv("HOME", str(barren))
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+
+    real_home = tmp_path / "passwd-home"
+    monkeypatch.setattr(cli.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(real_home)))
+    monkeypatch.setattr(cli, "_RUN_USER", tmp_path / "run" / "user")
+
+    sock_dir = tmp_path / "run" / "user" / str(os.getuid()) / "cc-socks"
+    sock_dir.mkdir(parents=True)
+    me = os.getpid()
+    (sock_dir / f"{me}.sock").touch()
+
+    sessions = real_home / ".claude" / "sessions"
+    sessions.mkdir(parents=True)
+    (sessions / f"{me}.json").write_text(
+        json.dumps(
+            {
+                "pid": me,
+                "cwd": "/repo/delta",
+                "name": "delta-33",
+                "messagingSocketPath": str(sock_dir / f"{me}.sock"),
+                "startedAt": 2000,
+            }
+        )
+    )
+
+    by_pid = {s.pid: s for s in cli.live_sessions()}
+    assert me in by_pid, "socket under /run/user/<uid> missed when XDG_RUNTIME_DIR is unset"
+    assert by_pid[me].name == "delta-33", (
+        "record under the passwd-database home missed when HOME points elsewhere"
+    )
