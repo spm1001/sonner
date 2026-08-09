@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -177,6 +178,11 @@ def spawn(repo: Path, timeout: float = 180.0) -> Session:
     detached, so it can be attached to later and messaged again. The wait is
     generous because a session start runs hooks and orientation before binding.
     """
+    if shutil.which("tmux") is None:
+        raise SystemExit(
+            "cold-spawn needs tmux (the spawned session must live in a terminal that "
+            "outlasts this command). Install tmux, or pass --no-spawn to fail instead."
+        )
     tmux_name = f"sonner-{repo.name}"
     if subprocess.run(["tmux", "has-session", "-t", tmux_name], capture_output=True).returncode == 0:
         tmux_name = f"{tmux_name}-{os.getpid()}"  # earlier ring left its window open
