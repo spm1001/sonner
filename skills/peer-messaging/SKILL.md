@@ -109,7 +109,7 @@ A live session in that repo gets the message. If none is running, sonner starts 
 
 Spawned sessions persist and keep costing context while they live. Attach with `tmux attach -t sonner-<repo>` and exit cleanly when the errand is done.
 
-Source: `~/repos/spm1001/aboyeur/tools/sonner.py`. Full measurements: `~/repos/spm1001/aboyeur/docs/native-xsm-review-2026-08-08.md`.
+`sonner` is on PATH (`uv tool install ~/repos/spm1001/sonner`). Source and its own board: `~/repos/spm1001/sonner`. Full measurements: `~/repos/spm1001/aboyeur/docs/native-xsm-review-2026-08-08.md`.
 
 ## Reading the roster
 
