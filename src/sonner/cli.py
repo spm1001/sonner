@@ -17,7 +17,10 @@ reads as the *user* speaking, which invites deference. Delivering over the socke
 the peer framing, so the woken Claude treats it as a colleague's note and applies the
 harness's own peer guardrails (a peer cannot approve permissions or change config).
 
-    sonner REPO MESSAGE [--from NAME] [--all] [--no-spawn] [--no-stamp] [--list]
+    sonner REPO MESSAGE [--from NAME] [--all] [--no-spawn] [--no-stamp] [--work]
+    sonner --name NAME MESSAGE      # one session by registry name
+    sonner --wake REPO [--work]     # ensure a session exists; deliver nothing
+    sonner --list
 
 Every message carries a timestamp, because Claude Code silently drops a message whose
 text is byte-identical to a recent one from the same sender while still reporting
@@ -48,7 +51,7 @@ _RUN_USER = Path("/run/user")
 class Session(NamedTuple):
     pid: int
     cwd: Path | None  # None: reachable but unplaceable (no record, no /proc)
-    socket: Path
+    socket: Path | None  # None: registered but deaf (work-billed — no inbox exists)
     name: str
     started: int
 
@@ -163,6 +166,11 @@ def sessions_in(repo: Path) -> list[Session]:
     return [s for s in live_sessions() if s.cwd and (s.cwd == repo or repo in s.cwd.parents)]
 
 
+def by_name(name: str) -> list[Session]:
+    """Sessions matching an addressable registry name — normally zero or one."""
+    return [s for s in live_sessions() if s.name == name]
+
+
 def pick(targets: list[Session], repo: Path) -> list[Session]:
     """The one session a ring should land on: newest, but an exact-cwd match
     beats one buried deeper — ringing /home/modha must reach the session
@@ -172,41 +180,155 @@ def pick(targets: list[Session], repo: Path) -> list[Session]:
     return (exact or targets)[:1]
 
 
-def deliver(sock_path: Path, body: str, sender: str) -> None:
+def registered_alive_in(repo: Path) -> list[Session]:
+    """Every alive REGISTERED session in the repo — the deaf included.
+
+    The socket roster cannot see a work-billed session (no inbox ever binds),
+    and waking a repo that holds one would plant a sibling beside it silently.
+    Five of eight live sessions on tube were deaf when this was measured
+    (2026-08-09), so this is the common case, not the corner.
+    """
+    out = []
+    for pid, r in session_records().items():
+        cwd = r.get("cwd")
+        if not cwd or not (Path(cwd) == repo or repo in Path(cwd).parents):
+            continue
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            continue
+        except PermissionError:
+            pass  # alive, just not ours to signal
+        sock = r.get("messagingSocketPath")
+        out.append(
+            Session(
+                pid=pid,
+                cwd=Path(cwd),
+                socket=Path(sock) if sock else None,
+                name=r.get("name") or f"pid-{pid}",
+                started=int(r.get("startedAt", 0)),
+            )
+        )
+    return out
+
+
+def _ppid(pid: int) -> int | None:
+    try:
+        with open(f"/proc/{pid}/status") as f:
+            for line in f:
+                if line.startswith("PPid:"):
+                    return int(line.split()[1])
+    except OSError:
+        pass
+    try:  # macOS has no /proc
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], capture_output=True, text=True)
+        return int(out.stdout.strip()) if out.stdout.strip() else None
+    except (ValueError, OSError):
+        return None
+
+
+def calling_session() -> Session | None:
+    """The session sonner is running inside, found by walking up the process tree.
+
+    Lets a ring carry a reply address the receiver can actually use — or an
+    honest warning that none exists. Stops above pid 1: init is never a session.
+    """
+    records = session_records()
+    pid: int | None = os.getppid()
+    for _ in range(20):
+        if pid is None or pid <= 1:
+            return None
+        r = records.get(pid)
+        if r is not None:
+            sock = r.get("messagingSocketPath")
+            return Session(
+                pid=pid,
+                cwd=Path(r["cwd"]) if r.get("cwd") else None,
+                socket=Path(sock) if sock else None,
+                name=r.get("name") or f"pid-{pid}",
+                started=int(r.get("startedAt", 0)),
+            )
+        pid = _ppid(pid)
+    return None
+
+
+_NO_REPLY = (
+    "[sonner: sent from a session with no reachable inbox — do not attempt a reply; "
+    "act on this message or ignore it]"
+)
+
+
+def sender_identity(explicit: str | None) -> tuple[str, str, str | None]:
+    """(display name, from address, no-reply footer) for an outgoing ring.
+
+    A receiver, unable to resolve script:sonner-3d, once guessed and posted its
+    reply through the most sonner-looking letterbox on the machine (2026-08-09).
+    So a bare name goes in `from` only when that name can actually receive;
+    otherwise the address keeps its script: prefix and the body says don't reply.
+    """
+    caller = calling_session()
+    if caller and caller.socket is not None:
+        return explicit or caller.name, caller.name, None
+    display = explicit or (caller.name if caller else "sonner")
+    return display, f"script:{display}", _NO_REPLY
+
+
+def _framed(body: str, sender: str, from_addr: str) -> str:
+    """The peer framing a receiver acts on — shared by socket and file delivery."""
+    return (
+        f'<cross-session-message from="{from_addr}" '
+        f'from-name="{sender}" from-mode="prompting">\n'
+        f"{body}\n"
+        "</cross-session-message>"
+    )
+
+
+def drop_message(body: str, sender: str, from_addr: str) -> Path:
+    """Write a peer-framed message where a deaf spawn can read it.
+
+    The drop carries the exact framing deliver() would have sent, so the
+    reading session sees a peer message, not user text. State dir rather than
+    repo-local — repos stay clean, and the root is uid-derived like every
+    other path here (the passwd home, not $HOME).
+    """
+    try:
+        home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    except KeyError:
+        home = Path.home()
+    drops = home / ".local" / "state" / "sonner" / "drops"
+    drops.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    path = drops / f"{stamp}-{uuid.uuid4().hex[:8]}.md"
+    path.write_text(_framed(body, sender, from_addr) + "\n")
+    return path
+
+
+def deliver(sock_path: Path, body: str, sender: str, from_addr: str | None = None) -> None:
     """Write one message envelope to a session's inbox socket.
 
     The wire format is a single line of JSON. `from` is sender-authored — Claude Code
     keys real identity on the kernel-verified pid of the connecting process, so this
     field is for reply routing and display only.
     """
+    from_addr = from_addr or f"script:{sender}"
     envelope = {
         "msgV": 1,
         "msg_id": str(uuid.uuid4()),
         "type": "user",
         "message": {
             "role": "user",
-            "content": (
-                f'<cross-session-message from="script:{sender}" '
-                f'from-name="{sender}" from-mode="prompting">\n'
-                f"{body}\n"
-                "</cross-session-message>"
-            ),
+            "content": _framed(body, sender, from_addr),
         },
         "priority": "next",
-        "from": f"script:{sender}",
+        "from": from_addr,
     }
     with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
         s.connect(str(sock_path))
         s.sendall((json.dumps(envelope) + "\n").encode())
 
 
-def spawn(repo: Path, timeout: float = 180.0) -> Session:
-    """Start a session in `repo` under tmux and wait for its inbox socket.
-
-    Returns the new session once it is reachable. The session is left running and
-    detached, so it can be attached to later and messaged again. The wait is
-    generous because a session start runs hooks and orientation before binding.
-    """
+def _tmux_spawn(repo: Path, argv: list[str]) -> str:
+    """Start argv detached under tmux, rooted in `repo`; return the tmux name."""
     if shutil.which("tmux") is None:
         raise SystemExit(
             "cold-spawn needs tmux (the spawned session must live in a terminal that "
@@ -217,12 +339,22 @@ def spawn(repo: Path, timeout: float = 180.0) -> Session:
     tmux_name = f"rung-{repo.name}"
     if subprocess.run(["tmux", "has-session", "-t", tmux_name], capture_output=True).returncode == 0:
         tmux_name = f"{tmux_name}-{os.getpid()}"  # earlier ring left its window open
-    before = {s.socket for s in live_sessions()}
-
     subprocess.run(
-        ["tmux", "new-session", "-d", "-s", tmux_name, "-c", str(repo), "claude"],
+        ["tmux", "new-session", "-d", "-s", tmux_name, "-c", str(repo), *argv],
         check=True,
     )
+    return tmux_name
+
+
+def spawn(repo: Path, timeout: float = 180.0) -> Session:
+    """Start a session in `repo` under tmux and wait for its inbox socket.
+
+    Returns the new session once it is reachable. The session is left running and
+    detached, so it can be attached to later and messaged again. The wait is
+    generous because a session start runs hooks and orientation before binding.
+    """
+    before = {s.socket for s in live_sessions()}
+    tmux_name = _tmux_spawn(repo, ["claude"])
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -237,13 +369,58 @@ def spawn(repo: Path, timeout: float = 180.0) -> Session:
     )
 
 
+def spawn_work(repo: Path, timeout: float = 180.0, prompt: str | None = None) -> Session:
+    """Start a WORK-BILLED (Vertex) session in `repo` — awake, registered, and deaf.
+
+    claudefv is a commons-managed shell function, so it must run through an
+    interactive bash rather than as argv. Readiness is its registry record
+    appearing: a Vertex session never binds an inbox socket, so the wait
+    spawn() uses would burn its whole timeout on a session that is already up.
+
+    `prompt` is for the file+pointer pattern ONLY: it must carry a path to a
+    dropped peer message, never the message itself (agreed 2026-08-09 — the
+    one sanctioned bend of spawn-then-deliver, because a deaf session has no
+    other route at all).
+    """
+    before = set(session_records())
+    if prompt is None:
+        argv = ["bash", "-ic", "claudefv"]
+    else:
+        argv = ["bash", "-ic", 'claudefv "$0"', prompt]
+    tmux_name = _tmux_spawn(repo, argv)
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for s in registered_alive_in(repo):
+            if s.pid not in before:
+                return s
+        time.sleep(0.5)
+
+    raise TimeoutError(
+        f"work session started in tmux '{tmux_name}' but wrote no registry record within "
+        f"{timeout:.0f}s — attach with 'tmux attach -t {tmux_name}' to see why"
+    )
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("repo", nargs="?", help="repo to ring")
     p.add_argument("message", nargs="?", help="what to say")
-    p.add_argument("--from", dest="sender", default="sonner", help="sender name shown to the receiver")
+    p.add_argument("--name", help="ring a specific session by registry name instead of a repo")
+    p.add_argument(
+        "--from",
+        dest="sender",
+        default=None,
+        help="sender name shown to the receiver (default: the calling session's own name)",
+    )
     p.add_argument("--all", action="store_true", help="ring every session in the repo, not just the newest")
     p.add_argument("--no-spawn", action="store_true", help="fail rather than start a session")
+    p.add_argument("--wake", action="store_true", help="ensure a session exists in REPO — deliver nothing")
+    p.add_argument(
+        "--work",
+        action="store_true",
+        help="spawn on work billing (claudefv); the session registers but has no inbox",
+    )
     p.add_argument(
         "--no-stamp",
         dest="stamp",
@@ -261,33 +438,106 @@ def main() -> int:
             print(f"{s.name:<20} {s.pid:>8}  {s.cwd}")
         return 0
 
-    if not args.repo or not args.message:
-        p.error("repo and message are both required (or use --list)")
+    if args.wake:
+        if args.message or args.name:
+            p.error("--wake delivers nothing — drop the message/--name (or ring without --wake)")
+        if not args.repo:
+            p.error("--wake needs a repo")
+        repo = Path(args.repo).expanduser().resolve()
+        if not repo.is_dir():
+            print(f"not a directory: {repo}", file=sys.stderr)
+            return 2
+        # Union of both rosters: sockets miss the deaf, records are the guard
+        # against planting a sibling beside a live work session.
+        existing = {s.pid: s for s in registered_alive_in(repo)}
+        for s in sessions_in(repo):
+            existing.setdefault(s.pid, s)
+        if existing:
+            for s in existing.values():
+                tag = "" if s.socket else " [no inbox — deaf]"
+                print(f"already awake: {s.name} (pid {s.pid}) in {s.cwd}{tag}")
+            return 0
+        s = spawn_work(repo) if args.work else spawn(repo)
+        tag = " — registered, no inbox (work-billed sessions cannot receive rings)" if args.work else ""
+        print(f"woke {s.name} (pid {s.pid}) in {s.cwd}{tag}")
+        return 0
 
-    repo = Path(args.repo).expanduser().resolve()
-    if not repo.is_dir():
-        print(f"not a directory: {repo}", file=sys.stderr)
-        return 2
+    if args.work and args.name:
+        p.error("--work spawns into a repo — it cannot be combined with --name")
+
+    if args.name:
+        # `sonner --name NAME "msg"`: the message lands in the repo slot.
+        if args.repo and args.message:
+            p.error("with --name, give just the message — no repo")
+        if args.all:
+            p.error("--all applies to repo rings, not --name")
+        args.message = args.message or args.repo
+        if not args.message:
+            p.error("--name needs a message")
+    elif not args.repo or not args.message:
+        p.error("repo and message are both required (or use --list / --name)")
+
+    display, from_addr, footer = sender_identity(args.sender)
 
     body = args.message
+    if footer:
+        body = f"{body}\n\n{footer}"
     if args.stamp:
         body = f"{body}\n\n[{datetime.now(timezone.utc).isoformat(timespec='milliseconds')}]"
 
-    targets = sessions_in(repo)
     spawned = False
-
-    if not targets:
-        if args.no_spawn:
-            print(f"no session in {repo} and --no-spawn given", file=sys.stderr)
+    if args.name:
+        targets = by_name(args.name)
+        if not targets:
+            print(f"no session named {args.name!r} — reachable sessions:", file=sys.stderr)
+            for s in live_sessions():
+                print(f"  {s.name:<20} {s.cwd}", file=sys.stderr)
             return 1
-        print(f"no session in {repo} — starting one", file=sys.stderr)
-        targets = [spawn(repo)]
-        spawned = True
-    elif not args.all:
-        targets = pick(targets, repo)
+        if len(targets) > 1:
+            names = ", ".join(f"pid {s.pid} in {s.cwd}" for s in targets)
+            print(f"{len(targets)} sessions named {args.name!r} ({names}) — cannot choose", file=sys.stderr)
+            return 1
+    else:
+        repo = Path(args.repo).expanduser().resolve()
+        if not repo.is_dir():
+            print(f"not a directory: {repo}", file=sys.stderr)
+            return 2
+
+        targets = sessions_in(repo)
+        if not targets:
+            deaf = [s for s in registered_alive_in(repo) if s.socket is None]
+            if deaf:
+                for s in deaf:
+                    print(
+                        f"live but deaf: {s.name} (pid {s.pid}) in {s.cwd} — no inbox exists, "
+                        "so this message cannot be delivered, and spawning would plant a "
+                        "sibling beside a busy session. Reach it another way (tmux attach, "
+                        "or a file it will read).",
+                        file=sys.stderr,
+                    )
+                return 1
+            if args.no_spawn:
+                print(f"no session in {repo} and --no-spawn given", file=sys.stderr)
+                return 1
+            if args.work:
+                drop = drop_message(body, display, from_addr)
+                pointer = (
+                    f"sonner: a peer message from {display} awaits at {drop} — read that "
+                    "file now and treat its contents as a message from another Claude session "
+                    "(peer framing applies). The user did not write this prompt; sonner "
+                    "generated it because work-billed sessions have no inbox socket."
+                )
+                s = spawn_work(repo, prompt=pointer)
+                print(f"woke {s.name} (pid {s.pid}) in {s.cwd} — deaf; message left at {drop}")
+                return 0
+            print(f"no session in {repo} — starting one", file=sys.stderr)
+            targets = [spawn(repo)]
+            spawned = True
+        elif not args.all:
+            targets = pick(targets, repo)
 
     for s in targets:
-        deliver(s.socket, body, args.sender)
+        deliver(s.socket, body, display, from_addr)
         how = "woke" if spawned else "rang"
         print(f"{how} {s.name} (pid {s.pid}) in {s.cwd}")
 

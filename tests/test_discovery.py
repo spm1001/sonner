@@ -90,6 +90,165 @@ def test_sessions_in_matches_repo_and_subdirs(estate):
     assert cli.sessions_in(cli.Path("/repo/gamma")) == []
 
 
+def test_by_name(estate):
+    assert [s.pid for s in cli.by_name("alpha-11")] == [1]
+    assert cli.by_name("nobody-99") == []
+
+
+def test_name_with_repo_and_message_is_refused(estate, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["sonner", "/repo/alpha", "hello", "--name", "alpha-11"])
+    with pytest.raises(SystemExit):
+        cli.main()
+
+
+def test_unknown_name_fails_showing_roster(estate, monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["sonner", "--name", "nobody-99", "hi"])
+    assert cli.main() == 1
+    err = capsys.readouterr().err
+    assert "nobody-99" in err
+    assert "alpha-11" in err, "the roster should be shown so the caller can correct the name"
+
+
+def test_wake_reports_existing_without_spawning(estate, monkeypatch, capsys):
+    wake_repo = estate / "wake-repo"
+    wake_repo.mkdir()
+    me = os.getpid()
+    sock = estate / "runtime" / "cc-socks" / f"{me}.sock"
+    (estate / ".claude" / "sessions" / f"{me}.json").write_text(
+        json.dumps(
+            {"pid": me, "cwd": str(wake_repo), "name": "waked-55",
+             "messagingSocketPath": str(sock), "startedAt": 4000}
+        )
+    )
+    monkeypatch.setattr(cli, "spawn", lambda repo: pytest.fail("spawned beside a live session"))
+    monkeypatch.setattr(cli, "spawn_work", lambda repo: pytest.fail("spawned beside a live session"))
+    monkeypatch.setattr("sys.argv", ["sonner", "--wake", str(wake_repo)])
+    assert cli.main() == 0
+    out = capsys.readouterr().out
+    assert "already awake" in out
+    assert "waked-55" in out
+    assert "deaf" not in out
+
+
+def test_wake_sees_deaf_session_and_refuses_to_double(estate, monkeypatch, capsys):
+    """The socket roster can't see a deaf session; the record sweep must."""
+    deaf_repo = estate / "deaf-repo"
+    deaf_repo.mkdir()
+    deaf_pid = os.getppid()  # alive, not pid 1, and holds no socket in the estate
+    (estate / ".claude" / "sessions" / f"{deaf_pid}.json").write_text(
+        json.dumps({"pid": deaf_pid, "cwd": str(deaf_repo), "name": "deaf-44", "startedAt": 3000})
+    )
+    monkeypatch.setattr(cli, "spawn", lambda repo: pytest.fail("spawned a sibling beside a deaf session"))
+    monkeypatch.setattr(cli, "spawn_work", lambda repo: pytest.fail("spawned a sibling beside a deaf session"))
+    monkeypatch.setattr("sys.argv", ["sonner", "--wake", str(deaf_repo)])
+    assert cli.main() == 0
+    out = capsys.readouterr().out
+    assert "deaf-44" in out
+    assert "deaf" in out, "the human must be told the session is unreachable, not just that it exists"
+
+
+def test_spawn_work_readiness_keys_on_registry_record(estate, monkeypatch):
+    """A work session never binds a socket — the record appearing IS readiness."""
+    work_repo = estate / "work-repo"
+    work_repo.mkdir()
+    me = os.getpid()
+
+    def fake_tmux(repo, argv):
+        assert argv == ["bash", "-ic", "claudefv"], "work spawn must go through an interactive shell"
+        (estate / ".claude" / "sessions" / f"{me}.json").write_text(
+            json.dumps({"pid": me, "cwd": str(work_repo), "name": "work-66", "startedAt": 5000})
+        )
+        return "rung-work-repo"
+
+    monkeypatch.setattr(cli, "_tmux_spawn", fake_tmux)
+    s = cli.spawn_work(work_repo, timeout=5)
+    assert s.name == "work-66"
+    assert s.socket is None
+    assert s.pid == me
+
+
+def test_work_ring_drops_file_and_points_at_it(estate, monkeypatch, capsys):
+    empty_repo = estate / "empty-repo"
+    empty_repo.mkdir()
+    seen = {}
+
+    def fake_spawn_work(repo, timeout=180.0, prompt=None):
+        seen["prompt"] = prompt
+        return cli.Session(pid=99, cwd=repo, socket=None, name="work-99", started=1)
+
+    monkeypatch.setattr(cli, "spawn_work", fake_spawn_work)
+    monkeypatch.setattr("sys.argv", ["sonner", str(empty_repo), "the deadman went red", "--work"])
+    assert cli.main() == 0
+
+    prompt = seen["prompt"]
+    assert prompt is not None
+    assert "peer" in prompt, "the pointer must name the framing"
+    drop = cli.Path(prompt.split("awaits at ")[1].split(" —")[0])
+    content = drop.read_text()
+    assert "the deadman went red" in content, "the payload lives in the file, framed"
+    assert "<cross-session-message" in content
+    assert "the deadman went red" not in prompt, "the prompt carries the pointer, never the payload"
+
+
+def test_ring_refuses_deaf_occupied_repo(estate, monkeypatch, capsys):
+    deaf_repo = estate / "deaf-ring-repo"
+    deaf_repo.mkdir()
+    deaf_pid = os.getppid()
+    (estate / ".claude" / "sessions" / f"{deaf_pid}.json").write_text(
+        json.dumps({"pid": deaf_pid, "cwd": str(deaf_repo), "name": "deaf-77", "startedAt": 6000})
+    )
+    monkeypatch.setattr(cli, "spawn", lambda *a, **k: pytest.fail("spawned beside a deaf session"))
+    monkeypatch.setattr(cli, "spawn_work", lambda *a, **k: pytest.fail("spawned beside a deaf session"))
+    monkeypatch.setattr("sys.argv", ["sonner", str(deaf_repo), "anyone home?"])
+    assert cli.main() == 1
+    err = capsys.readouterr().err
+    assert "deaf-77" in err
+    assert "cannot be delivered" in err
+
+
+def test_calling_session_walks_to_enclosing_record(estate, monkeypatch):
+    sock = estate / "runtime" / "cc-socks" / "50.sock"
+    (estate / ".claude" / "sessions" / "50.json").write_text(
+        json.dumps(
+            {"pid": 50, "cwd": "/repo/caller", "name": "caller-50",
+             "messagingSocketPath": str(sock), "startedAt": 7000}
+        )
+    )
+    monkeypatch.setattr(cli.os, "getppid", lambda: 100)
+    monkeypatch.setattr(cli, "_ppid", {100: 50}.get)
+    caller = cli.calling_session()
+    assert caller is not None
+    assert caller.name == "caller-50"
+    assert caller.socket is not None
+
+
+def test_calling_session_never_matches_init(estate, monkeypatch):
+    """pid 1 has a record in the fixture — the walk must stop before it."""
+    monkeypatch.setattr(cli.os, "getppid", lambda: 100)
+    monkeypatch.setattr(cli, "_ppid", {100: 1}.get)
+    assert cli.calling_session() is None
+
+
+def test_sender_identity_three_shapes(monkeypatch):
+    socketed = cli.Session(pid=5, cwd=None, socket=cli.Path("/s/5.sock"), name="alive-5", started=1)
+    deaf = cli.Session(pid=6, cwd=None, socket=None, name="deaf-6", started=1)
+
+    monkeypatch.setattr(cli, "calling_session", lambda: socketed)
+    display, from_addr, footer = cli.sender_identity(None)
+    assert (display, from_addr, footer) == ("alive-5", "alive-5", None)
+
+    monkeypatch.setattr(cli, "calling_session", lambda: deaf)
+    display, from_addr, footer = cli.sender_identity(None)
+    assert display == "deaf-6"
+    assert from_addr == "script:deaf-6", "a deaf caller must not present a resolvable-looking address"
+    assert footer and "do not attempt a reply" in footer
+
+    monkeypatch.setattr(cli, "calling_session", lambda: None)
+    display, from_addr, footer = cli.sender_identity("custom")
+    assert (display, from_addr) == ("custom", "script:custom")
+    assert footer is not None
+
+
 def test_pick_prefers_exact_cwd_over_deeper():
     """Ringing /home/u reaches the session AT /home/u, not a newer one deeper in."""
     deeper = cli.Session(

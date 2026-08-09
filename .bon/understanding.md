@@ -20,8 +20,12 @@ The evening census: 8 live sessions, 5 of them deaf Vertex ones — the invisibl
 
 Sockets are the roster, records are enrichment — and since son-sireto, **env vars are hints layered on uid-derived ground truth**: `/run/user/<uid>/cc-socks` is swept even with `XDG_RUNTIME_DIR` unset, and homes come from both `$HOME` and the passwd database. The forcing incident: the receptionnaire mail harness (HOME=/srv/receptionnaire/home, no XDG_RUNTIME_DIR) saw an empty machine past three live sessions, spawned a duplicate, and timed out after 180s. Tests neutralize the uid-derived roots via `cli._RUN_USER` and a patched `pwd.getpwuid` — keep that pattern or the fake-estate tests leak the real machine.
 
-## Grammar gaps (observed, not yet designed)
+## The grammar (agreed with Sameer and shipped 2026-08-09, son-fomuno)
 
-- Repo addressing picks the newest session in the subtree: ringing `/home/modha` to reach the phone session actually targets whichever repo session under it is newest. No name-addressing in the CLI yet.
-- A Vertex spawn can't reuse `spawn()` as-is: `claudefv` is a commons-managed shell *function* (not argv-swappable), and readiness would have to key on the registry record appearing, since no socket ever will.
-- Delivery to a deaf session has no peer route at all; the candidate fallback is wake-or-file (durable message in a file, spawn prompt carries only a pointer) — bends the spawn-then-deliver convention, needs Sameer's verdict.
+Ring by repo or `--name`; `--wake` ensures without delivering; `--work` spawns claudefv (readiness = registry record appearing, never a socket). Exact-cwd match beats deeper sessions. Deaf-occupied repos are refused with an explanation, never doubled. Deaf delivery exists in exactly one form — Sameer's verdict: message dropped to `~/.local/state/sonner/drops/` (passwd-home-derived) with full peer framing, spawn prompt carrying only the pointer. Caller identity: sonner walks the process tree to find its enclosing session; a socketed caller's name goes in `from` (replies route), a deaf/absent caller gets `script:` + a do-not-reply footer. Proven live: a `--work` ring into the empty bon repo spawned claudefv, and the session read the drop and executed it.
+
+Operational facts learned doing it:
+
+- **`tmux kill-session` orphans the spawned claude** — it survives reparented to systemd. Kill by pid; claude cleans its own registry record on SIGTERM.
+- **`--work` depends on the tmux server's environment, not the caller's.** `bash -ic claudefv` sources `$HOME/.bashrc` — with a running tmux server that's modha's env and works; if a foreign-env caller (receptionnaire shape) ever starts the *first* tmux server, its HOME propagates and `claudefv` won't resolve. Watch item, not built around: the composed mail-inbox → work-spawn path has not run live end-to-end.
+- The socketed-caller reply route is fixture-tested only (a deaf session, which built it, cannot exercise it live).

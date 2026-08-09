@@ -11,6 +11,9 @@ uv run --group dev pytest          # run tests
 uv tool install .                  # put `sonner` on PATH
 sonner --list                      # every reachable session and its repo
 sonner REPO "message"              # ring (spawns if nobody's home)
+sonner --name NAME "message"       # ring one session by registry name
+sonner --wake REPO [--work]        # ensure a session exists (--work: claudefv, deaf by design)
+sonner REPO "message" --work       # empty repo: work spawn + file-drop, prompt carries only the pointer
 ```
 
 ## Module Map
