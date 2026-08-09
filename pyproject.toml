@@ -5,6 +5,9 @@ description = "Ring a repo, and a Claude answers — repo-addressed messaging fo
 requires-python = ">=3.11"
 license = "MIT"
 
+[project.scripts]
+sonner = "sonner.cli:main"
+
 [dependency-groups]
 dev = ["pytest"]
 
