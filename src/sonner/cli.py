@@ -399,8 +399,8 @@ def spawn(repo: Path, timeout: float = 180.0) -> Session:
 
     raise TimeoutError(
         f"session started in tmux window {window} but bound no inbox socket within "
-        f"{timeout:.0f}s — see why with: "
-        f"tmux select-window -t {window} && tmux attach -t {HOME_SESSION}"
+        f"{timeout:.0f}s — see why with 'tmux switch-client -t {window}' from inside "
+        f"tmux, or 'tmux attach -t {HOME_SESSION}' from outside"
     )
 
 
@@ -433,8 +433,8 @@ def spawn_work(repo: Path, timeout: float = 180.0, prompt: str | None = None) ->
 
     raise TimeoutError(
         f"work session started in tmux window {window} but wrote no registry record "
-        f"within {timeout:.0f}s — see why with: "
-        f"tmux select-window -t {window} && tmux attach -t {HOME_SESSION}"
+        f"within {timeout:.0f}s — see why with 'tmux switch-client -t {window}' from "
+        f"inside tmux, or 'tmux attach -t {HOME_SESSION}' from outside"
     )
 
 
