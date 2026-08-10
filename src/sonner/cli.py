@@ -47,6 +47,12 @@ from typing import NamedTuple
 # XDG runtime root on systemd Linux — real even when $XDG_RUNTIME_DIR is unset.
 _RUN_USER = Path("/run/user")
 
+# One tmux session holds every Claude, one window each — the convention
+# `claude-start` (dotfiles) has always used. Spawns join it rather than minting
+# their own session, so a human has one place to look and one tab bar that lists
+# everything. Override for a machine that names its home session differently.
+HOME_SESSION = os.environ.get("SONNER_TMUX_SESSION", "claude")
+
 
 class Session(NamedTuple):
     pid: int
@@ -328,22 +334,50 @@ def deliver(sock_path: Path, body: str, sender: str, from_addr: str | None = Non
 
 
 def _tmux_spawn(repo: Path, argv: list[str]) -> str:
-    """Start argv detached under tmux, rooted in `repo`; return the tmux name."""
+    """Start argv detached in a window of the home session; return its window id.
+
+    A window, never a session of its own. Sameer's ask, 2026-08-10: one tmux
+    session, everything flowing into it. Session-per-spawn had scattered live
+    Claudes across three sessions, and since a tmux status bar names only the
+    session you are attached to, two of them were invisible from the tab bar.
+
+    The window is named for the repo, which also makes `claude-start <repo>`
+    find and reuse it. `-n` at creation is what keeps that name: it disables
+    automatic-rename for the window, so tmux does not overwrite it with the
+    running command (measured 2026-08-10 — without `-n` the tab reads "claude").
+    """
     if shutil.which("tmux") is None:
         raise SystemExit(
             "cold-spawn needs tmux (the spawned session must live in a terminal that "
             "outlasts this command). Install tmux, or pass --no-spawn to fail instead."
         )
-    # Not "sonner-<repo>": a receiver hunting for sonner's own session once picked
-    # a spawned bystander off exactly that name and misdelivered a reply (2026-08-09).
-    tmux_name = f"rung-{repo.name}"
-    if subprocess.run(["tmux", "has-session", "-t", tmux_name], capture_output=True).returncode == 0:
-        tmux_name = f"{tmux_name}-{os.getpid()}"  # earlier ring left its window open
-    subprocess.run(
-        ["tmux", "new-session", "-d", "-s", tmux_name, "-c", str(repo), *argv],
+    # The window name is the repo's, never "sonner-<repo>": a receiver hunting for
+    # sonner's own session once picked a spawned bystander off exactly that name and
+    # misdelivered a reply (2026-08-09). Naming a window after its repo is honest —
+    # it says where the session is, not who started it.
+    #
+    # "=" forces an exact session match. Bare "claude" prefix-matches, so a session
+    # called "claude-anything" would silently swallow every spawn.
+    target = f"={HOME_SESSION}:"
+    have_home = subprocess.run(
+        ["tmux", "has-session", "-t", f"={HOME_SESSION}"], capture_output=True
+    ).returncode == 0
+    if have_home:
+        # -d: do not steal focus from whatever window the human is watching.
+        cmd = ["tmux", "new-window", "-d", "-t", target, "-n", repo.name]
+    else:
+        cmd = ["tmux", "new-session", "-d", "-s", HOME_SESSION, "-n", repo.name]
+    proc = subprocess.run(
+        [*cmd, "-c", str(repo), "-P", "-F", "#{window_id}", *argv],
+        capture_output=True,
+        text=True,
         check=True,
     )
-    return tmux_name
+    # The window id (@N) is the only durable coordinate: it survives the session
+    # being renamed and the window being moved between sessions, both of which a
+    # "session:window" string does not — and a stale one resolves to nothing while
+    # tmux still exits 0 (measured 2026-08-10).
+    return proc.stdout.strip()
 
 
 def spawn(repo: Path, timeout: float = 180.0) -> Session:
@@ -354,7 +388,7 @@ def spawn(repo: Path, timeout: float = 180.0) -> Session:
     generous because a session start runs hooks and orientation before binding.
     """
     before = {s.socket for s in live_sessions()}
-    tmux_name = _tmux_spawn(repo, ["claude"])
+    window = _tmux_spawn(repo, ["claude"])
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -364,8 +398,9 @@ def spawn(repo: Path, timeout: float = 180.0) -> Session:
         time.sleep(0.5)
 
     raise TimeoutError(
-        f"session started in tmux '{tmux_name}' but bound no inbox socket within "
-        f"{timeout:.0f}s — attach with 'tmux attach -t {tmux_name}' to see why"
+        f"session started in tmux window {window} but bound no inbox socket within "
+        f"{timeout:.0f}s — see why with: "
+        f"tmux select-window -t {window} && tmux attach -t {HOME_SESSION}"
     )
 
 
@@ -387,7 +422,7 @@ def spawn_work(repo: Path, timeout: float = 180.0, prompt: str | None = None) ->
         argv = ["bash", "-ic", "claudefv"]
     else:
         argv = ["bash", "-ic", 'claudefv "$0"', prompt]
-    tmux_name = _tmux_spawn(repo, argv)
+    window = _tmux_spawn(repo, argv)
 
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -397,8 +432,9 @@ def spawn_work(repo: Path, timeout: float = 180.0, prompt: str | None = None) ->
         time.sleep(0.5)
 
     raise TimeoutError(
-        f"work session started in tmux '{tmux_name}' but wrote no registry record within "
-        f"{timeout:.0f}s — attach with 'tmux attach -t {tmux_name}' to see why"
+        f"work session started in tmux window {window} but wrote no registry record "
+        f"within {timeout:.0f}s — see why with: "
+        f"tmux select-window -t {window} && tmux attach -t {HOME_SESSION}"
     )
 
 

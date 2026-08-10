@@ -304,3 +304,53 @@ def test_discovery_survives_a_rewritten_environment(tmp_path, monkeypatch):
     assert by_pid[me].name == "delta-33", (
         "record under the passwd-database home missed when HOME points elsewhere"
     )
+
+
+def test_spawn_joins_the_home_session_as_a_window(monkeypatch):
+    """One tmux session, one window per repo (Sameer, 2026-08-10).
+
+    Session-per-spawn scattered live Claudes across sessions a tab bar cannot
+    show — it lists only the windows of the session you are attached to.
+    """
+    calls = []
+    monkeypatch.setattr(cli.shutil, "which", lambda _: "/usr/bin/tmux")
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1] == "has-session":
+            return SimpleNamespace(returncode=0)  # home session already exists
+        return SimpleNamespace(returncode=0, stdout="@42\n", text="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    window = cli._tmux_spawn(cli.Path("/repos/spm1001/infra"), ["claude"])
+
+    assert window == "@42", "the durable coordinate is the window id, not a session name"
+    probe, spawn = calls
+    assert probe == ["tmux", "has-session", "-t", "=claude"], (
+        "bare 'claude' prefix-matches — a session named claude-anything would swallow spawns"
+    )
+    assert spawn[:3] == ["tmux", "new-window", "-d"], "a window, and never stealing focus"
+    assert "-t" in spawn and spawn[spawn.index("-t") + 1] == "=claude:"
+    assert spawn[spawn.index("-n") + 1] == "infra", (
+        "-n names the tab AND disables automatic-rename, which otherwise overwrites it"
+    )
+    assert "new-session" not in spawn
+
+
+def test_spawn_creates_the_home_session_when_absent(monkeypatch):
+    """A cold machine has no home session — make it, don't fall back to per-repo."""
+    calls = []
+    monkeypatch.setattr(cli.shutil, "which", lambda _: "/usr/bin/tmux")
+
+    def fake_run(argv, **kwargs):
+        calls.append(argv)
+        if argv[1] == "has-session":
+            return SimpleNamespace(returncode=1)  # nothing running
+        return SimpleNamespace(returncode=0, stdout="@0\n", text="")
+
+    monkeypatch.setattr(cli.subprocess, "run", fake_run)
+    cli._tmux_spawn(cli.Path("/repos/spm1001/infra"), ["claude"])
+
+    spawn = calls[1]
+    assert spawn[:5] == ["tmux", "new-session", "-d", "-s", "claude"]
+    assert spawn[spawn.index("-n") + 1] == "infra"

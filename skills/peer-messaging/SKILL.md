@@ -113,9 +113,11 @@ Grammar honesty rules (all measured 2026-08-09): a ring lands on the session sit
 
 A live session in that repo gets the message. If none is running, sonner starts one under tmux, waits for its inbox socket, then delivers — so the woken Claude sees a peer message rather than a user prompt, and treats it as a colleague's note rather than an instruction from its user.
 
-Know whose plumbing is whose: the messaging itself (sockets, registry, the two tools) is Anthropic's and needs no tmux anywhere. tmux is this estate's answer to a different problem — a spawned TUI session needs a terminal that outlasts its spawner — and all such sessions land as sibling sessions on the user's single tmux server, attachable by human and Claude alike.
+Know whose plumbing is whose: the messaging itself (sockets, registry, the two tools) is Anthropic's and needs no tmux anywhere. tmux is this estate's answer to a different problem — a spawned TUI session needs a terminal that outlasts its spawner — and every such session lands as a **window of the one tmux session named `claude`**, named after its repo, attachable by human and Claude alike.
 
-Spawned sessions persist and keep costing context while they live. Attach with `tmux attach -t rung-<repo>` and exit cleanly when the errand is done. (The prefix was `sonner-` until 2026-08-09; it changed because a receiver hunting for sonner's own session picked a spawned bystander off that name and misdelivered a reply.)
+Spawned sessions persist and keep costing context while they live. Attach with `tmux attach -t claude` and pick the window named after the repo; exit cleanly when the errand is done. (Spawns used to mint a session apiece — `sonner-<repo>`, then `rung-<repo>` — until 2026-08-10, when Sameer asked for one session and everything flowing into it: a tmux status bar lists only the windows of the session you are attached to, so sibling sessions are invisible from the tab bar. The `sonner-` name went first, on 2026-08-09, because a receiver hunting for sonner's own session picked a spawned bystander off it and misdelivered a reply.)
+
+A session's registry record carries a `tmux` field like `claude:@24.%24`. **Use only the `@window` or `%pane` part of it.** The session name in that string is a snapshot taken at registration and rots the moment a session is renamed or a window is moved — and a stale target resolves to nothing while `tmux` still exits 0, so it fails silently. The `@`/`%` ids are server-global and survive both (measured 2026-08-10).
 
 `sonner` is on PATH (`uv tool install ~/repos/spm1001/sonner`). Source and its own board: `~/repos/spm1001/sonner`. Full measurements: `~/repos/spm1001/aboyeur/docs/native-xsm-review-2026-08-08.md`.
 
