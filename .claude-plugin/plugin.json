@@ -1,0 +1,30 @@
+{
+  "name": "sonner",
+  "version": "0.1.0",
+  "description": "Ring a repo, and a Claude answers — repo-addressed peer messaging for Claude Code sessions. CLI plus the peer-messaging skill.",
+  "author": {
+    "name": "Sameer Modha",
+    "url": "https://github.com/spm1001"
+  },
+  "repository": "https://github.com/spm1001/sonner",
+  "license": "MIT",
+  "keywords": [
+    "messaging",
+    "peer",
+    "cross-session",
+    "doorbell"
+  ],
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/ensure-sonner.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
