@@ -38,6 +38,14 @@ One module is a deliberate choice — this is a doorbell, not a framework. Split
 - **`from` in the envelope is display/reply-routing only** — receivers verify identity via `SO_PEERCRED` on the connecting process. Don't build anything that trusts the `from` string.
 - **The companion skill (`skills/peer-messaging/`) carries the house habits** — addressing forms, wake-or-file test, machine-register replies. The live copy on this machine is still `~/.claude/skills/peer-messaging/` until the plugin ships; keep them in step (son board tracks the handover).
 
+## Plugin packaging (batterie)
+
+sonner ships as a batterie plugin: `.claude-plugin/plugin.json` (SessionStart hook only), `hooks/ensure-sonner.sh` (symlinks `instructions.md` → `~/.claude/rules/sonner.md`, installs the CLI if missing), `instructions.md` (the thin always-on shard), `skills/peer-messaging/`. Three things to hold:
+
+- **The assembler's skill-plugin copy-list ships no Python** — no `pyproject.toml`, no `src/`. The hook therefore installs from `git+https://github.com/spm1001/sonner` when running vendored (repo is public, stdlib-only), and from `$PLUGIN_ROOT` in a source checkout. Don't add a dependency without re-checking that path.
+- **The vendored plugin.json version is the SUITE version** — the assembler stamps it. This repo's own `0.1.0` is local-dev-only; release via `/batterie:publish`, never a hand-bump.
+- **A shard/skill/hook edit here is vendored content** — it ships only on a suite bump, and takes effect in sessions only after restart (guidance is session-cached).
+
 ## Wire format (captured, not documented upstream)
 
 One newline-terminated JSON line to the socket:
