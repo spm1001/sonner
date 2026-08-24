@@ -44,6 +44,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import NamedTuple
 
+from sonner import __version__, _invlog
+
 # XDG runtime root on systemd Linux — real even when $XDG_RUNTIME_DIR is unset.
 _RUN_USER = Path("/run/user")
 
@@ -438,7 +440,34 @@ def spawn_work(repo: Path, timeout: float = 180.0, prompt: str | None = None) ->
     )
 
 
+class _ReturnCode(SystemExit):
+    """Sentinel for main()'s return-int contract, below — never raised by
+    anything else."""
+
+
 def main() -> int:
+    """Entry point: invocation logging around the real main.
+
+    Every invocation — success and failure alike — appends one caller-stamped
+    JSONL line via the vendored shim (src/sonner/_invlog.py; canonical copy
+    and cross-estate conformance test live in spm1001/harness-ergonomics).
+
+    sonner's idiom is return-int, not sys.exit — tests assert on the return
+    value, and p.error() SystemExits must still propagate. The shim's capture
+    derives exit codes from exceptions only, so a plain wrap would log every
+    returned failure code as ok. Bridge: raise the return value as a private
+    SystemExit subclass inside the capture (the shim logs its true code) and
+    unwrap only that sentinel here, re-raising everything genuine. Logging is
+    best-effort: a broken log path never breaks the CLI (erg-tebapi).
+    """
+    try:
+        with _invlog.capture("sonner", __version__) as inv:
+            raise _ReturnCode(_main(inv))
+    except _ReturnCode as e:
+        return e.code if isinstance(e.code, int) else 0
+
+
+def _main(inv) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     p.add_argument("repo", nargs="?", help="repo to ring")
     p.add_argument("message", nargs="?", help="what to say")
@@ -465,6 +494,10 @@ def main() -> int:
     )
     p.add_argument("--list", action="store_true", help="show reachable sessions and exit")
     args = p.parse_args()
+    # No subparsers — the three verbs are flag-selected, in dispatch order.
+    # --name rings stay "ring"; parsed carries the name for finer analysis.
+    mode = "list" if args.list else ("wake" if args.wake else "ring")
+    inv.note(subcommand=mode, parsed=args)
 
     if args.list:
         sessions = live_sessions()
