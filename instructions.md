@@ -4,8 +4,10 @@ Auto-loaded via `~/.claude/rules/sonner.md`, symlinked at session start by this
 plugin's `hooks/ensure-sonner.sh` — edit `instructions.md` in the source repo,
 never the copy in `rules/`.
 
-**Invoke `Skill(peer-messaging)` BEFORE any `SendMessage`, `ListAgents` or
-`sonner` call, and when a cross-session peer message arrives.** The skill
+**Invoke the `peer-messaging` skill BEFORE any `SendMessage`, `ListAgents` or
+`sonner` call, and when a cross-session peer message arrives** — use the exact
+name your skills listing shows (`sonner:peer-messaging` under the plugin
+install; bare `peer-messaging` as a user skill). The skill
 carries the house protocol; this shard holds only what bites before you would
 think to load it:
 

@@ -1,6 +1,6 @@
 [project]
 name = "sonner"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Ring a repo, and a Claude answers — repo-addressed messaging for Claude Code sessions"
 requires-python = ">=3.11"
 license = "MIT"
@@ -14,6 +14,14 @@ dev = ["pytest"]
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+# Version is read from plugin.json (the suite convention): publish.py lazy-stamps
+# plugin.json to the suite version, and a static version here would drift from it
+# on the FIRST publish — batterie-lint's ALIGNMENT 3 goes red on the mismatch.
+# Caught by a refuting review before it shipped, 2026-08-24 (son-sohowu).
+[tool.hatch.version]
+path = ".claude-plugin/plugin.json"
+pattern = "\"version\":\\s*\"(?P<version>[^\"]+)\""
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/sonner"]
