@@ -51,3 +51,54 @@ Run in ONE supervised sitting — step 2's ordering constraint is real:
 ## For Claudes to come
 
 **A version-consistency check that passes before the event it guards is not evidence — ask what the pipeline's first real run will do to the values.** sonner's pyproject and plugin.json both read 0.1.0, so every lint pass was green — and the first `/batterie:publish` would have stamped plugin.json to the suite number and gone red, on the exact run that mattered most. The general form: when two copies of a value are compared by a guard, and some machinery rewrites ONE of them at release time, the guard's pre-release greens are vacuous. Check what the stamping step touches, then make the other copy derive rather than duplicate. A fresh-context refuter caught this precisely because it read the stamping code instead of trusting the passing lint.
+
+---
+
+## Correction, appended 2026-08-24 (the supervised publish sitting)
+
+The runbook above was followed end to end and worked. Two of its **step 6 (Mac leg)** claims were wrong when
+tested on the real machine, so they are corrected here rather than edited above — the original belief plus the
+correction is the record.
+
+**1. "non-interactive ssh has a locked keychain, so don't attempt it that way" — too broad.**
+The whole Mac leg ran fine over plain `ssh sameer-macbook-air`. The keychain only blocks git routes needing
+credentials; `spm1001/batterie` is **public**, so `claude plugin marketplace update batterie` and
+`claude plugin install sonner@batterie` both fetched anonymously and succeeded. What the locked keychain
+genuinely does block, measured the same morning: `git fetch` on **`spm1001/.claude`** (private) →
+`gh: command not found` / `could not read Username`. So the rule is *private repos need an interactive
+session*, not *the Mac leg needs one*. Two further Mac facts worth carrying: `claude` is **not on the
+non-interactive PATH** (it is `/Users/modha/.local/bin/claude`), and `uv` is at **`/opt/homebrew/bin/uv`**,
+not `~/.local/bin/uv`.
+
+**2. "Next session the hook replaces the stale pre-grammar CLI" — it does NOT.**
+`hooks/ensure-sonner.sh` is **install-if-missing only** (`if ! command -v sonner`), and says so in its own
+comment: no version-drift check, because the vendored plugin.json carries the stamped *suite* version rather
+than sonner's, so any session-start comparison is structurally false (bds-japoca, inherited from bon's hook).
+Freshness is `/batterie:update`'s job. Demonstrated rather than reasoned: the hook was run directly on the Mac
+(a SessionStart command hook is exactly this script) and **exited 0 silently** — it created the
+`~/.claude/rules/sonner.md` symlink and skipped the CLI entirely, leaving the 9 August binary in place.
+
+That skew is the thing to carry forward: **on any machine that already had a source-installed `sonner`, the
+plugin install delivers the new shard next to the old CLI, with no signal.** It is not cosmetic — the stale
+Mac CLI's `--help` had `--list/--all/--no-spawn/--no-stamp` but **no `--name`, `--wake` or `--work`**, which
+are precisely the verbs the new shard and skill instruct a session to use. Fixed by hand:
+
+```
+ssh sameer-macbook-air '/opt/homebrew/bin/uv tool install git+https://github.com/spm1001/sonner --force --reinstall --no-cache'
+```
+
+which installed `sonner==1.73.0` — incidentally confirming the dynamic-version fix works, since the version
+resolves from plugin.json. Tracked as **son-rojuvi**.
+
+**What is verified on the Mac:** plugin installed at 1.73.0; `rules/sonner.md` symlinked into the plugin cache;
+CLI at 1.73.0 with the full grammar. `sonner --list` returns *"no reachable sessions"* — and that null is
+**controlled, not blind**: no socket dirs exist (`/tmp/cc-socks`, `/tmp/cc-socks-501`), `~/.claude/sessions/`
+is empty, and the only matching process is Claude Desktop's `chrome-native-host`. There is genuinely nothing
+to find. The discovery path's true positive comes from tube, where `--list` returned two live peers.
+
+**Left open on the Mac, both pre-existing:** its `~/.claude` clone is **55 commits behind** and cannot pull
+over non-interactive ssh, so it still carries the retired `skills/peer-messaging` user copy (byte-identical to
+the vendored one, so a benign duplicate picker entry) and lacks the guidance-check noise-list fix. One
+`git pull` in an interactive Mac session clears both. Its other-marketplace plugins are also stale
+(`commons@mit`, `mise-home@batterie-home`, `trousse-personal`) — those need credentials the ssh route lacks.
+The seven `@batterie` plugins were brought 1.66.0 → 1.73.0 during this sitting.
