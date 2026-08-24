@@ -21,8 +21,9 @@ sonner REPO "message" --work       # empty repo: work spawn + file-drop, prompt 
 | Module | Role |
 |--------|------|
 | `cli` | The whole tool: discovery (sockets + registries), wire-format delivery, tmux spawn, argparse `main()` |
+| `_invlog` | Vendored estate invocation-log shim — every run appends one caller-stamped JSONL line to `~/.local/share/sonner/invocations.jsonl` (message bodies included, argv-raw by schema design). main() returns ints, so its codes bridge into the shim via the `_ReturnCode` SystemExit subclass — don't unwind that, or returned failures log as ok. Never edit here; re-vendor from canonical (spm1001/harness-ergonomics) |
 
-One module is a deliberate choice — this is a doorbell, not a framework. Split only when a second consumer of discovery actually exists.
+One module for the tool itself is a deliberate choice — this is a doorbell, not a framework. Split only when a second consumer of discovery actually exists. (`_invlog` is vendored instrumentation, not a second module in that sense.)
 
 ## Key Conventions
 
