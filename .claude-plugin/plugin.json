@@ -1,6 +1,6 @@
 {
   "name": "sonner",
-  "version": "1.75.2",
+  "version": "1.75.5",
   "description": "Ring a repo, and a Claude answers — repo-addressed peer messaging for Claude Code sessions. CLI plus the peer-messaging skill.",
   "author": {
     "name": "Sameer Modha",
