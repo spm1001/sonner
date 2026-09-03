@@ -17,10 +17,16 @@ reads as the *user* speaking, which invites deference. Delivering over the socke
 the peer framing, so the woken Claude treats it as a colleague's note and applies the
 harness's own peer guardrails (a peer cannot approve permissions or change config).
 
-    sonner REPO MESSAGE [--from NAME] [--all] [--no-spawn] [--no-stamp] [--work]
+    sonner REPO MESSAGE [--from NAME] [--all] [--no-spawn] [--no-stamp] [--work] [--force-spawn]
     sonner --name NAME MESSAGE      # one session by registry name
-    sonner --wake REPO [--work]     # ensure a session exists; deliver nothing
-    sonner --list
+    sonner --wake REPO [--work] [--force-spawn]  # ensure a session exists; deliver nothing
+    sonner --list                   # every live session; deaf ones tagged
+
+Not every live session can be rung. A provider-billed (Vertex) session writes a
+full registry record with no messagingSocketPath at all — present and busy, deaf
+by design. --list shows those tagged rather than pretending their repo is empty,
+and a ring or --wake into a repo held only by deaf sessions is refused rather
+than planting a sibling silently; --force-spawn is the explicit, audible override.
 
 Every message carries a timestamp, because Claude Code silently drops a message whose
 text is byte-identical to a recent one from the same sender while still reporting
