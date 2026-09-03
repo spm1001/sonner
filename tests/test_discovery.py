@@ -32,6 +32,7 @@ def estate(tmp_path, monkeypatch):
     # Discovery also sweeps uid-derived roots that ignore the env; point them
     # back into the fake estate so the real machine can't leak in.
     monkeypatch.setattr(cli, "_RUN_USER", tmp_path / "run-user-absent")
+    monkeypatch.setattr(cli, "_TMP", tmp_path / "tmp-absent")
     monkeypatch.setattr(cli.pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(tmp_path)))
 
     def record(config: str, pid: int, cwd: str, name: str) -> None:

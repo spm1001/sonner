@@ -48,6 +48,11 @@ from sonner import __version__, _invlog
 
 # XDG runtime root on systemd Linux — real even when $XDG_RUNTIME_DIR is unset.
 _RUN_USER = Path("/run/user")
+# Where the binary falls back to when no runtime dir suits it (macOS, long paths).
+# A module constant so tests can point it away from the real machine: with it
+# hardcoded, a host with live sessions in /tmp/cc-socks leaked ten of them into
+# a fixture expecting two.
+_TMP = Path("/tmp")
 
 # One tmux session holds every Claude, one window each — the convention
 # `claude-start` (dotfiles) has always used. Spawns join it rather than minting
@@ -79,8 +84,8 @@ def socket_dirs() -> list[Path]:
     if runtime:
         dirs.append(Path(runtime) / "cc-socks")
     dirs.append(_RUN_USER / str(os.getuid()) / "cc-socks")  # the XDG default, env or no env
-    dirs.append(Path("/tmp") / "cc-socks")  # macOS (verified live: /tmp/cc-socks/<pid>.sock)
-    dirs.append(Path("/tmp") / f"cc-socks-{os.getuid()}")  # the binary's long-path fallback
+    dirs.append(_TMP / "cc-socks")  # macOS (verified live: /tmp/cc-socks/<pid>.sock)
+    dirs.append(_TMP / f"cc-socks-{os.getuid()}")  # the binary's long-path fallback
     return [d for d in dict.fromkeys(dirs) if d.is_dir()]
 
 
