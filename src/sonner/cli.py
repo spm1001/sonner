@@ -60,6 +60,12 @@ _TMP = Path("/tmp")
 # everything. Override for a machine that names its home session differently.
 HOME_SESSION = os.environ.get("SONNER_TMUX_SESSION", "claude")
 
+# How a live-but-deaf session is marked wherever one is printed. "provider-gated"
+# names the cause: Claude Code omits messagingSocketPath for provider-billed
+# (Vertex) sessions, so no inbox ever exists — the session is present and busy,
+# and nothing can ring it.
+_DEAF_TAG = "[deaf: no inbox — provider-gated]"
+
 
 class Session(NamedTuple):
     pid: int
@@ -193,18 +199,43 @@ def pick(targets: list[Session], repo: Path) -> list[Session]:
     return (exact or targets)[:1]
 
 
-def registered_alive_in(repo: Path) -> list[Session]:
-    """Every alive REGISTERED session in the repo — the deaf included.
+def _proc_start_ticks(pid: int) -> int | None:
+    """The kernel's start time for pid, in clock ticks since boot — None where
+    the machine cannot say (no /proc: macOS). Field 22 of /proc/<pid>/stat,
+    counted from after the last ')' because comm may itself contain spaces."""
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            stat = f.read()
+        return int(stat.rsplit(")", 1)[1].split()[19])
+    except (OSError, IndexError, ValueError):
+        return None
+
+
+def registered_alive() -> list[Session]:
+    """Every alive REGISTERED session on the machine — the deaf included.
 
     The socket roster cannot see a work-billed session (no inbox ever binds),
     and waking a repo that holds one would plant a sibling beside it silently.
     Five of eight live sessions on tube were deaf when this was measured
     (2026-08-09), so this is the common case, not the corner.
+
+    A record can be in three states, and only two of them are sessions:
+
+      messagingSocketPath present, socket exists, pid alive -> live, ringable
+      messagingSocketPath ABSENT, pid alive                 -> live but deaf
+      messagingSocketPath present, socket gone              -> a dead session's leavings
+
+    The deaf case has nothing but the pid to vouch for it, and pids are reused
+    — after a reboot every stale record's pid may belong to some other process,
+    which would read as a deaf Claude in a repo nobody is in. Claude Code writes
+    `procStart` (the kernel's start-time ticks for its own pid) into each
+    record; where /proc can answer, a mismatch means the pid is someone else's
+    now and the record is leavings. Where it cannot (macOS), the pid is trusted.
     """
     out = []
     for pid, r in session_records().items():
         cwd = r.get("cwd")
-        if not cwd or not (Path(cwd) == repo or repo in Path(cwd).parents):
+        if not cwd:
             continue
         try:
             os.kill(pid, 0)
@@ -213,6 +244,16 @@ def registered_alive_in(repo: Path) -> list[Session]:
         except PermissionError:
             pass  # alive, just not ours to signal
         sock = r.get("messagingSocketPath")
+        if sock and not Path(sock).exists():
+            continue  # the session bound an inbox once and has since gone
+        recorded = r.get("procStart")
+        actual = _proc_start_ticks(pid)
+        if recorded is not None and actual is not None:
+            try:
+                if int(recorded) != actual:
+                    continue  # pid reused since this record was written
+            except ValueError:
+                pass  # unparseable procStart: trust the pid, as without /proc
         out.append(
             Session(
                 pid=pid,
@@ -223,6 +264,19 @@ def registered_alive_in(repo: Path) -> list[Session]:
             )
         )
     return out
+
+
+def registered_alive_in(repo: Path) -> list[Session]:
+    """registered_alive() narrowed to sessions whose cwd is the repo or inside it."""
+    return [s for s in registered_alive() if s.cwd == repo or repo in s.cwd.parents]
+
+
+def deaf_sessions() -> list[Session]:
+    """Live sessions with no inbox anywhere on the machine, newest first — the
+    class the socket roster structurally cannot show. Keyed on the field Claude
+    Code itself omits for provider-billed sessions, not on anything a session
+    asserts about itself."""
+    return sorted((s for s in registered_alive() if s.socket is None), key=lambda s: s.started, reverse=True)
 
 
 def _ppid(pid: int) -> int | None:
@@ -497,19 +551,44 @@ def _main(inv) -> int:
         action="store_false",
         help="omit the timestamp — only for one-off messages you will never repeat",
     )
-    p.add_argument("--list", action="store_true", help="show reachable sessions and exit")
+    p.add_argument(
+        "--force-spawn",
+        action="store_true",
+        help="spawn beside a live-but-deaf session instead of refusing (the deaf one stays; "
+        "you get a sibling)",
+    )
+    p.add_argument(
+        "--list",
+        action="store_true",
+        help="show every live session and exit — deaf ones (no inbox) annotated",
+    )
     args = p.parse_args()
     # No subparsers — the three verbs are flag-selected, in dispatch order.
     # --name rings stay "ring"; parsed carries the name for finer analysis.
     mode = "list" if args.list else ("wake" if args.wake else "ring")
     inv.note(subcommand=mode, parsed=args)
 
+    if args.force_spawn and args.no_spawn:
+        p.error("--force-spawn and --no-spawn contradict each other")
+
     if args.list:
+        # Socket roster first (the ringable), then the deaf the roster cannot see.
+        # A pid in both (record present, socket present) is one session, not two.
         sessions = live_sessions()
-        if not sessions:
-            print("no reachable sessions")
-        for s in sessions:
-            print(f"{s.name:<20} {s.pid:>8}  {s.cwd}")
+        socketed = {s.pid for s in sessions}
+        deaf = [s for s in deaf_sessions() if s.pid not in socketed]
+        rows = sorted([*sessions, *deaf], key=lambda s: s.started, reverse=True)
+        if not rows:
+            print("no sessions")
+        for s in rows:
+            tag = "" if s.socket else f"  {_DEAF_TAG}"
+            print(f"{s.name:<20} {s.pid:>8}  {s.cwd}{tag}")
+        if deaf:
+            print(
+                f"{len(deaf)} deaf: live but no inbox exists (provider-billed) — a ring at "
+                "their repo is refused rather than spawning a sibling; --force-spawn overrides",
+                file=sys.stderr,
+            )
         return 0
 
     if args.wake:
@@ -526,11 +605,28 @@ def _main(inv) -> int:
         existing = {s.pid: s for s in registered_alive_in(repo)}
         for s in sessions_in(repo):
             existing.setdefault(s.pid, s)
-        if existing:
+        deaf_only = bool(existing) and all(s.socket is None for s in existing.values())
+        if existing and not (args.force_spawn and deaf_only):
             for s in existing.values():
-                tag = "" if s.socket else " [no inbox — deaf]"
+                tag = "" if s.socket else f" {_DEAF_TAG}"
                 print(f"already awake: {s.name} (pid {s.pid}) in {s.cwd}{tag}")
+            if args.force_spawn:
+                print(
+                    "--force-spawn ignored: a session with an inbox is already here",
+                    file=sys.stderr,
+                )
+            elif deaf_only:
+                print(
+                    "nothing can ring it; --force-spawn plants a sibling beside it anyway",
+                    file=sys.stderr,
+                )
             return 0
+        for s in existing.values():
+            print(
+                f"live but deaf: {s.name} (pid {s.pid}) in {s.cwd} — spawning a sibling "
+                "beside it as asked (--force-spawn)",
+                file=sys.stderr,
+            )
         s = spawn_work(repo) if args.work else spawn(repo)
         tag = " — registered, no inbox (work-billed sessions cannot receive rings)" if args.work else ""
         print(f"woke {s.name} (pid {s.pid}) in {s.cwd}{tag}")
@@ -538,6 +634,8 @@ def _main(inv) -> int:
 
     if args.work and args.name:
         p.error("--work spawns into a repo — it cannot be combined with --name")
+    if args.force_spawn and args.name:
+        p.error("--force-spawn spawns into a repo — it cannot be combined with --name")
 
     if args.name:
         # `sonner --name NAME "msg"`: the message lands in the repo slot.
@@ -580,16 +678,23 @@ def _main(inv) -> int:
         targets = sessions_in(repo)
         if not targets:
             deaf = [s for s in registered_alive_in(repo) if s.socket is None]
-            if deaf:
+            if deaf and not args.force_spawn:
                 for s in deaf:
                     print(
                         f"live but deaf: {s.name} (pid {s.pid}) in {s.cwd} — no inbox exists, "
                         "so this message cannot be delivered, and spawning would plant a "
                         "sibling beside a busy session. Reach it another way (tmux attach, "
-                        "or a file it will read).",
+                        "or a file it will read), or pass --force-spawn to plant a sibling "
+                        "that CAN receive this message.",
                         file=sys.stderr,
                     )
                 return 1
+            for s in deaf:
+                print(
+                    f"live but deaf: {s.name} (pid {s.pid}) in {s.cwd} — spawning a sibling "
+                    "beside it as asked (--force-spawn); the deaf session does not see this message",
+                    file=sys.stderr,
+                )
             if args.no_spawn:
                 print(f"no session in {repo} and --no-spawn given", file=sys.stderr)
                 return 1
